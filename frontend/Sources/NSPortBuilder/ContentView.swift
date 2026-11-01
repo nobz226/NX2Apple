@@ -297,6 +297,21 @@ final class BuildModel: ObservableObject {
         didSet { UserDefaults.standard.set(repoPath, forKey: "repoPath") }
     }
 
+    /// The two checkouts a launcher without its own engine switches between: NX2Apple (the pin plus the patch queue, built
+    /// into engine/) and nxnative (an engine tree, with our fixes on its branch). A build uses whichever is selected.
+    enum BuildSource: String, CaseIterable {
+        case nx2apple, nxnative
+        var folder: String { NSHomeDirectory() + (self == .nx2apple ? "/NX2Apple" : "/nxnative") }
+        var label: String { self == .nx2apple ? "NX2Apple" : "nxnative" }
+    }
+    var buildSource: BuildSource? { BuildSource.allCases.first { $0.folder == repoPath } }
+    func selectBuildSource(_ source: BuildSource) {
+        guard !running, !repoBusy, buildSource != source, Self.isRepo(source.folder) else { return }
+        repoPath = source.folder
+        repoBehind = nil; repoStatus = ""
+        checkRepoUpdates(silent: true)
+    }
+
     nonisolated static func isRepo(_ dir: String) -> Bool {
         EngineLayout.isCheckout(dir)   // a checkout with tools/engine.py, a synced engine/, or an engine tree (#214)
     }
@@ -3582,6 +3597,17 @@ struct BuilderView: View {
             if m.usesEngineStore {
                 engineRows
             } else {
+            row(m.t("repo.source"), detail: m.t("repo.sourceNote")) {
+                ForEach(BuildModel.BuildSource.allCases, id: \.self) { source in
+                    if m.buildSource == source {
+                        Button(source.label) {}.buttonStyle(.borderedProminent).disabled(m.running || m.repoBusy)
+                    } else {
+                        Button(source.label) { m.selectBuildSource(source) }
+                            .disabled(m.running || m.repoBusy || !BuildModel.isRepo(source.folder))
+                    }
+                }
+            }
+            divider
             row(m.t("repo.title"),
                 detail: m.repoOK ? m.shortPath(m.repoPath)
                     : (m.repoPath.isEmpty ? m.t("repo.notFound") : String(format: m.t("repo.notRepo"), m.shortPath(m.repoPath))),
