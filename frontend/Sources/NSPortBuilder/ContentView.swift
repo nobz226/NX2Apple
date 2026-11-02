@@ -300,11 +300,23 @@ final class BuildModel: ObservableObject {
     /// The two checkouts a launcher without its own engine switches between: NX2Apple (the pin plus the patch queue, built
     /// into engine/) and nxnative (an engine tree, with our fixes on its branch). A build uses whichever is selected.
     enum BuildSource: String, CaseIterable {
-        case nx2apple, nxnative
-        var folder: String { NSHomeDirectory() + (self == .nx2apple ? "/NX2Apple" : "/nxnative") }
-        var label: String { self == .nx2apple ? "NX2Apple" : "nxnative" }
+        case nobz, nxnative, nx2apple
+        var folder: String { NSHomeDirectory() + (self == .nx2apple ? "/NX2Apple" : self == .nxnative ? "/nxnative" : "/nxnative-nobz") }
+        var label: String { self == .nx2apple ? "NX2Apple" : self == .nxnative ? "nxnative" : "Nobz" }
     }
     var buildSource: BuildSource? { BuildSource.allCases.first { $0.folder == repoPath } }
+    /// A game's own choice of checkout (buildFrom.<title ID>, a folder), over the one Settings selects. Empty: that one.
+    nonisolated static func buildFromKey(_ titleID: String) -> String { "buildFrom." + titleID.uppercased() }
+    func buildFrom(_ titleID: String) -> String { UserDefaults.standard.string(forKey: Self.buildFromKey(titleID)) ?? "" }
+    func setBuildFrom(_ folder: String, for titleID: String) {
+        objectWillChange.send()
+        if folder.isEmpty { UserDefaults.standard.removeObject(forKey: Self.buildFromKey(titleID)) } else { UserDefaults.standard.set(folder, forKey: Self.buildFromKey(titleID)) }
+    }
+    /// The checkout this build runs from: the game's choice while it is still a checkout, else the selected one
+    var buildRepo: String {
+        let chosen = buildFrom(Self.buildKey(basePath))
+        return !chosen.isEmpty && Self.isRepo(chosen) ? chosen : repoPath
+    }
     func selectBuildSource(_ source: BuildSource) {
         guard !running, !repoBusy, buildSource != source, Self.isRepo(source.folder) else { return }
         repoPath = source.folder
@@ -1261,8 +1273,8 @@ final class BuildModel: ObservableObject {
         failure = nil; confirmingOverride = nil
         let override = takeOverrideFlag()   // for this build only: the next one asks again
         installedOn = ""; installedAppPath = ""
-        guard repoOK else {
-            fail(repoPath.isEmpty ? t("msg.repoInvalidEmpty") : String(format: t("msg.repoInvalid"), shortPath(repoPath)))
+        guard Self.isRepo(buildRepo) else {
+            fail(buildRepo.isEmpty ? t("msg.repoInvalidEmpty") : String(format: t("msg.repoInvalid"), shortPath(buildRepo)))
             return
         }
         // Resolve the interpreter here if the dependency check has not landed yet. checkDeps()
@@ -1271,16 +1283,16 @@ final class BuildModel: ObservableObject {
         // rejected with "require Python 3.12 or newer" whatever the machine actually had (#53).
         let py = pythonPath.isEmpty ? Self.findPython().path : pythonPath
         // engine/ is the only engine and is stale or missing (#214): make it, then start again
-        if EngineLayout.needsSyncBeforeBuild(repoPath) {
+        if EngineLayout.needsSyncBeforeBuild(buildRepo) {
             syncEngine { ok in
                 self.running = false
-                if ok && !EngineLayout.needsSyncBeforeBuild(self.repoPath) { self.startBuild() }
+                if ok && !EngineLayout.needsSyncBeforeBuild(self.buildRepo) { self.startBuild() }
                 else { self.fail(String(format: self.t("msg.toolsOld"), "engine/ (python3 tools/engine.py sync, see the log)")) }
             }
             return
         }
         // The tools this app runs, before a build that takes an hour finds one missing at its last step (#87)
-        let missing = Self.missingTools(in: repoPath)
+        let missing = Self.missingTools(in: buildRepo)
         if !missing.isEmpty {
             fail(String(format: t("msg.toolsOld"), missing.joined(separator: ", ")))
             return
@@ -1339,7 +1351,7 @@ final class BuildModel: ObservableObject {
         // option and would stop with "unrecognized arguments" (issue #5), so ask the script; without
         // it the script's own default (<input>/<title ID>_build) is used and the archive step follows
         // whatever folder the build reports.
-        let hasWorkDir = Self.repoSupportsWorkDir(repoPath)
+        let hasWorkDir = Self.repoSupportsWorkDir(buildRepo)
         if !hasWorkDir {
             say(t("msg.noWorkDir"))
         }
@@ -1362,7 +1374,7 @@ final class BuildModel: ObservableObject {
                 return
             }
         }
-        let engine = EngineLayout.root(repoPath)   // the checkout's engine/ (#214)
+        let engine = EngineLayout.root(buildRepo)   // the checkout's engine/ (#214)
         var args = [engine + "/" + Self.buildScript, inputDir, "-k", keysPath,
                     "--progress", "json"]
         // A compatibility switch the player turned on: written to a small env file the pipeline
@@ -1986,7 +1998,7 @@ final class BuildModel: ObservableObject {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: pythonPath.isEmpty ? "/usr/bin/python3" : pythonPath)
         // dest/romfs.img: one file, which main.m's per-game lookup takes before any folder.
-        let engine = EngineLayout.root(repoPath)
+        let engine = EngineLayout.root(buildRepo)
         p.arguments = [engine + "/" + Self.romfsImageTool, "--reuse", romfs, dest + "/romfs.img"]
         let romfsPy = p.executableURL!.path
         p.environment = ["PATH": Self.toolPath("/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", python: romfsPy), "PYTHONPATH": engine + "/dm/tools"]
@@ -3421,11 +3433,29 @@ struct BuilderView: View {
         }
     }
 
+    /// This game's checkout: its own (source/ beside its app), one of the three, or the one Settings selects
+    private var buildFromPicker: some View {
+        let tid = BuildModel.buildKey(m.basePath)
+        let own = library.games.first { $0.titleID.caseInsensitiveCompare(tid) == .orderedSame }
+            .map { (($0.appPath as NSString).deletingLastPathComponent as NSString).appendingPathComponent("source") }
+        return Picker(m.t("repo.source"), selection: Binding(get: { m.buildFrom(tid) }, set: { m.setBuildFrom($0, for: tid) })) {
+            Text(m.t("repo.gameDefault")).tag("")
+            if let own, BuildModel.isRepo(own) { Text(m.t("repo.gameOwn")).tag(own) }
+            ForEach(BuildModel.BuildSource.allCases, id: \.self) { source in
+                if BuildModel.isRepo(source.folder) { Text(source.label).tag(source.folder) }
+            }
+        }
+        .fixedSize()
+        .disabled(m.running)
+        .help(m.t("repo.gameNote"))
+    }
+
     /// The page's conclusion, at the end of its column: what is still missing, and the button.
     private var action: some View {
         HStack(spacing: 18) {
             statusText
             Spacer(minLength: 12)
+            if !m.usesEngineStore && !m.basePath.isEmpty { buildFromPicker }
             Button {
                 m.running ? m.stop() : m.startBuild()
             } label: {
