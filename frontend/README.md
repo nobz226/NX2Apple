@@ -221,7 +221,7 @@ Paths and the build log use the system's monospaced face. `python3 fonts/embed_f
 writes the font into the binary as `Sources/NSPortBuilder/EmbeddedFonts.swift`, so the app needs no font
 installed and no resource bundle beside the executable.
 
-The app icon is `AppIcon.icon`, the Liquid Glass icon made in Icon Composer (the iOS app uses the same file).
+The app icon is `AppIcon.icon`, an Icon Composer icon (the iOS app uses the same file): one image layer, the Joy-Con pair (`Assets/joycons.png`, 1024 px, transparent), with no fill of its own, so the system tile shows behind it.
 `build-mac-app.yml` compiles it with the `actool` of Xcode 27.1 (the one in Xcode 26.6 throws an exception on this icon) into `Assets.car` (macOS 26 and later) and `AppIcon.icns` (macOS 13 to 25),
 and `Info.plist` names both. To compile it by hand:
 
