@@ -46,4 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
+
+    /// The app is its one window: closing it quits, as the window's close button suggests. Left running with no
+    /// window, a click on the Dock icon did not bring one back, and only the Dock menu's Quit ended it.
+    /// Games run as their own apps, so closing the window leaves a game that is playing alone.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
